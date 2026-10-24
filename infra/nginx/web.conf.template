@@ -1,0 +1,66 @@
+# Rendered by the nginx image's envsubst at container start (only variables that are set in the
+# environment are substituted, so nginx's own $variables are untouched).
+#   API_UPSTREAM  host:port of apps/api inside the network, e.g. api:4000
+#   PUBLIC_HOST   the public host name users type, e.g. app.example.com (used in the CSP for wss://)
+# TLS is terminated IN FRONT of this container (load balancer / Caddy / host nginx). This server
+# trusts X-Forwarded-Proto from it, and passes the real client address to the API in
+# X-Forwarded-For — set TRUST_PROXY on the API to the number of proxies in front of it.
+
+map $http_x_forwarded_proto $fwd_proto { default $http_x_forwarded_proto; "" $scheme; }
+
+server {
+  listen 8080;
+  server_name _;
+  server_tokens off;
+  root /usr/share/nginx/html;
+  index index.html;
+  client_max_body_size 200k;   # the API itself caps JSON at 100kb
+
+  # Security headers (see infra/nginx/security-headers.conf for the reasoning behind each).
+  # connect-src 'self' covers fetch(); wss:// is listed explicitly because some browsers do not
+  # treat 'self' as covering the WebSocket scheme.
+  add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss://${PUBLIC_HOST}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" always;
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "no-referrer" always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+  add_header Cross-Origin-Opener-Policy "same-origin" always;
+
+  # Hashed build assets never change under the same name.
+  location /assets/ {
+    expires 1y;
+    try_files $uri =404;
+  }
+
+  # API and live-data socket: same origin as the page, proxied to the backend.
+  location /api/ {
+    proxy_pass http://${API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $fwd_proto;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_read_timeout 60s;
+  }
+  location = /ws {
+    proxy_pass http://${API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header Origin $http_origin;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $fwd_proto;
+    proxy_read_timeout 75s;     # the gateway pings every 30s
+    proxy_send_timeout 75s;
+  }
+
+  # The SPA shell: client-side routes fall back to index.html, and it must never be cached stale.
+  location / {
+    expires -1;
+    try_files $uri /index.html;
+  }
+
+  location = /nginx-health { access_log off; default_type text/plain; return 200 "ok\n"; }
+}

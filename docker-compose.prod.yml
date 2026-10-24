@@ -1,0 +1,132 @@
+# DerivDesk — production stack for a single Docker host.
+#
+#   cp infra/prod/*.env.example → real files (see infra/prod/README comments), chmod 600 them, then:
+#   docker compose -f docker-compose.prod.yml --env-file infra/prod/stack.env up -d --build
+#
+# TLS is NOT terminated here. Put a TLS terminator in front (cloud load balancer, Caddy, or a host
+# nginx) and point it at the two loopback ports below. Set TRUST_PROXY in infra/prod/api.env to the
+# number of proxies between the internet and the API (terminator + the web container's nginx = 2).
+#
+# Network layout — this is what keeps the admin deployment separate:
+#   public_net      : web, api       (+ outbound internet for api: Deriv)
+#   admin_edge      : admin          (the ONLY admin-side container with a published port / egress route)
+#   admin_internal  : admin, admin-api   (internal: admin-api has NO route to the internet, no published port)
+#   db_net          : postgres, api, admin-api, migrate   (internal: nothing outside can reach it)
+# Docker gives every container on a NON-internal network a NAT route out, so admin-api is deliberately
+# kept off any non-internal network: a compromised admin API cannot phone home or reach Deriv.
+# The admin web UI is published on its own loopback port: expose it only through a VPN / allow-listed
+# listener, never the same public listener as the client app.
+#
+# NOTE: this file was written and statically checked in an environment WITHOUT Docker. Run
+# `docker compose -f docker-compose.prod.yml config` and a staging deploy before trusting it.
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  postgres:
+    <<: *hardening
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: derivdesk
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in stack.env}
+    volumes:
+      - derivdesk_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d derivdesk"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # postgres needs a few capabilities at start-up to drop privileges and chown its data directory.
+    cap_drop: []
+    networks: [db_net]
+
+  migrate:
+    build: { context: ., dockerfile: infra/docker/migrate.Dockerfile }
+    restart: "no"
+    environment:
+      MIGRATE_DATABASE_URL: postgresql://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/derivdesk
+      DERIVDESK_API_DB_PASSWORD: ${DERIVDESK_API_DB_PASSWORD:?set DERIVDESK_API_DB_PASSWORD in stack.env}
+      DERIVDESK_ADMIN_DB_PASSWORD: ${DERIVDESK_ADMIN_DB_PASSWORD:?set DERIVDESK_ADMIN_DB_PASSWORD in stack.env}
+    depends_on:
+      postgres: { condition: service_healthy }
+    security_opt: ["no-new-privileges:true"]
+    networks: [db_net]
+
+  api:
+    <<: *hardening
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    env_file: infra/prod/api.env
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DATABASE_URL: postgresql://derivdesk_api:${DERIVDESK_API_DB_PASSWORD}@postgres:5432/derivdesk
+      METRICS_PORT: "9100"          # internal only: never publish this port
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    read_only: true
+    tmpfs: ["/tmp"]
+    mem_limit: 768m
+    networks: [public_net, db_net]
+    # Run ONE api replica unless you have read docs/operations.md §4.3 "Scaling beyond one api replica".
+    # The database lease makes BOT trading safe across replicas (and makes rolling restarts / a standby
+    # safe), but other per-process state (double-buy guard, rate limiters, token-refresh de-duplication)
+    # is NOT shared between replicas.
+
+  web:
+    <<: *hardening
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    environment:
+      API_UPSTREAM: api:4000
+      PUBLIC_HOST: ${PUBLIC_HOST:?set PUBLIC_HOST (e.g. app.example.com) in stack.env}
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:8080:8080"
+    depends_on: [api]
+    # nginx rewrites its own config at start-up, so the root filesystem stays writable.
+    cap_drop: []
+    mem_limit: 128m
+    networks: [public_net]
+
+  admin-api:
+    <<: *hardening
+    build: { context: ., dockerfile: apps/admin-api/Dockerfile }
+    env_file: infra/prod/admin-api.env
+    environment:
+      NODE_ENV: production
+      PORT: "4100"
+      DATABASE_URL: postgresql://derivdesk_admin:${DERIVDESK_ADMIN_DB_PASSWORD}@postgres:5432/derivdesk
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    read_only: true
+    tmpfs: ["/tmp"]
+    mem_limit: 384m
+    networks: [admin_internal, db_net]
+
+  admin:
+    <<: *hardening
+    build: { context: ., dockerfile: apps/admin/Dockerfile }
+    environment:
+      ADMIN_API_UPSTREAM: admin-api:4100
+    ports:
+      - "${ADMIN_BIND:-127.0.0.1}:8081:8080"
+    depends_on: [admin-api]
+    cap_drop: []
+    mem_limit: 128m
+    networks: [admin_edge, admin_internal]
+
+networks:
+  public_net: {}
+  admin_edge: {}
+  admin_internal:
+    internal: true
+  db_net:
+    internal: true
+
+volumes:
+  derivdesk_pg_data: {}

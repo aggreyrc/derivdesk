@@ -1,0 +1,43 @@
+# Same idea as web.conf.template, for the ADMIN SPA. Deploy only on the internal network
+# (VPN / allow-listed LB): the admin surface must never share a public listener with the client app.
+#   ADMIN_API_UPSTREAM  host:port of apps/admin-api, e.g. admin-api:4100
+# No WebSocket here; the CSP allows same-origin requests only.
+
+map $http_x_forwarded_proto $fwd_proto { default $http_x_forwarded_proto; "" $scheme; }
+
+server {
+  listen 8080;
+  server_name _;
+  server_tokens off;
+  root /usr/share/nginx/html;
+  index index.html;
+  client_max_body_size 200k;
+
+  add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" always;
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "no-referrer" always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+  add_header Cross-Origin-Opener-Policy "same-origin" always;
+  add_header X-Robots-Tag "noindex, nofollow" always;
+
+  location /assets/ {
+    expires 1y;
+    try_files $uri =404;
+  }
+  location /api/ {
+    proxy_pass http://${ADMIN_API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $fwd_proto;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_read_timeout 60s;
+  }
+  location / {
+    expires -1;
+    try_files $uri /index.html;
+  }
+  location = /nginx-health { access_log off; default_type text/plain; return 200 "ok\n"; }
+}

@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+.git
+*.zip
+**/coverage
+docs
+README.md
+# Generated at build time inside the image (a stale host copy must never leak in):
+packages/db/generated

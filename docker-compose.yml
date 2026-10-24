@@ -1,0 +1,93 @@
+# DerivDesk local development stack.
+#
+# Network topology matters here as much as the code does:
+#   - `public_net`  : web (client SPA), api, postgres, redis
+#   - `internal_net`: admin (ops SPA), admin-api, postgres
+# NOTE: infra/db-init/001_roles.sql is deliberately NOT mounted as a postgres
+# init script — init scripts run before migrations create the tables it GRANTs on.
+# Apply it after migrating: `npm run db:roles` (see README).
+# postgres is the only service on both — everything else is reachable only
+# from the deployment it belongs to. In production this maps to: apps/api +
+# apps/web behind your public load balancer, apps/admin-api + apps/admin
+# behind a VPN/allowlisted internal load balancer, never the same one.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: derivdesk
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5432:5432" # dev convenience, loopback only — never publish the database in production
+    volumes:
+      - derivdesk_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [public_net, internal_net]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379" # loopback only: redis here has no auth
+    networks: [public_net]
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: apps/api/.env
+    environment:
+      DATABASE_URL: postgresql://derivdesk_api:change_me_api@postgres:5432/derivdesk
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [public_net]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:4000
+    ports:
+      - "5173:5173"
+    depends_on: [api]
+    networks: [public_net]
+
+  admin-api:
+    build:
+      context: .
+      dockerfile: apps/admin-api/Dockerfile
+    env_file: apps/admin-api/.env
+    environment:
+      DATABASE_URL: postgresql://derivdesk_admin:change_me_admin@postgres:5432/derivdesk
+    ports:
+      - "127.0.0.1:4100:4100" # in production: no public port at all — internal LB only
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal_net]
+
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+    environment:
+      VITE_ADMIN_API_BASE_URL: http://localhost:4100
+    ports:
+      - "127.0.0.1:5174:5174" # in production: behind the same internal-only boundary as admin-api
+    depends_on: [admin-api]
+    networks: [internal_net]
+
+networks:
+  public_net:
+  internal_net:
+
+volumes:
+  derivdesk_pg_data:

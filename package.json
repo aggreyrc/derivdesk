@@ -1,0 +1,25 @@
+{
+  "name": "derivdesk",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "db:generate": "npm run generate --workspace packages/db",
+    "db:migrate": "npm run migrate --workspace packages/db",
+    "dev:api": "npm run dev --workspace apps/api",
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:admin-api": "npm run dev --workspace apps/admin-api",
+    "dev:admin": "npm run dev --workspace apps/admin",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:roles": "bash scripts/apply-roles.sh",
+    "db:migrate:deploy": "npm run migrate:deploy --workspace packages/db"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

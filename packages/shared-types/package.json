@@ -1,0 +1,7 @@
+{
+  "name": "@derivdesk/shared-types",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Types only — always `import type` from this package. No runtime code, so it can never drag server-only modules into a browser bundle.",
+  "types": "src/index.d.ts"
+}

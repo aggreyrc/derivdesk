@@ -1,0 +1,24 @@
+{
+  "name": "@derivdesk/db",
+  "private": true,
+  "version": "0.1.0",
+  "main": "generated/client/index.js",
+  "types": "generated/client/index.d.ts",
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "studio": "prisma studio",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "vite": "8.3.5"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
+    "prisma": "^5.20.0",
+    "vitest": "^5.0.5"
+  }
+}
